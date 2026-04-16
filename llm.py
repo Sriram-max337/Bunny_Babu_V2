@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from typing import Dict, List
 from urllib import error, request
 
@@ -34,56 +35,77 @@ class LLMClient:
 
         for candidate_model in self._candidate_models(model or Config.OPENROUTER_MODEL):
             for attempt in range(MAX_EMPTY_RESPONSE_RETRIES + 1):
-                payload = {
-                    "model": candidate_model,
-                    "messages": messages,
-                    "max_tokens": Config.MAX_RESPONSE_TOKENS,
-                    "temperature": Config.OPENROUTER_TEMPERATURE,
-                    "top_p": Config.OPENROUTER_TOP_P,
-                }
+                max_tokens = Config.MAX_RESPONSE_TOKENS
 
-                try:
-                    raw_body = self._post_chat_completion(payload)
-                    data = json.loads(raw_body)
-                    content = self._extract_content(data)
-                    if content.strip():
-                        return self.clean_response(content)
+                while True:
+                    payload = {
+                        "model": candidate_model,
+                        "messages": messages,
+                        "max_tokens": max_tokens,
+                        "temperature": Config.OPENROUTER_TEMPERATURE,
+                        "top_p": Config.OPENROUTER_TOP_P,
+                    }
 
-                    logger.warning(
-                        "OpenRouter model '%s' returned empty content on attempt %s.",
-                        candidate_model,
-                        attempt + 1,
-                    )
-                    if attempt < MAX_EMPTY_RESPONSE_RETRIES:
-                        continue
-                    break
-                except error.HTTPError as exc:
-                    details = exc.read().decode("utf-8", errors="ignore")
-                    if exc.code == 400 and "not a valid model ID" in details:
+                    try:
+                        raw_body = self._post_chat_completion(payload)
+                        data = json.loads(raw_body)
+                        content = self._extract_content(data)
+                        if content.strip():
+                            return self.clean_response(content)
+
                         logger.warning(
-                            "OpenRouter model '%s' was rejected, trying fallback.",
+                            "OpenRouter model '%s' returned empty content on attempt %s.",
                             candidate_model,
+                            attempt + 1,
                         )
+                        if attempt < MAX_EMPTY_RESPONSE_RETRIES:
+                            continue
                         break
-                    if exc.code == 429:
-                        logger.warning(
-                            "OpenRouter model '%s' is rate-limited, trying fallback.",
-                            candidate_model,
-                        )
-                        break
-                    logger.exception("OpenRouter HTTP error: %s", details)
-                    raise RuntimeError("OpenRouter request failed.") from exc
-                except error.URLError as exc:
-                    logger.exception("OpenRouter connection error: %s", exc)
-                    raise RuntimeError("OpenRouter request failed.") from exc
-                except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
-                    logger.exception("Invalid OpenRouter response")
-                    raise RuntimeError("Invalid OpenRouter response.") from exc
-                except Exception as exc:
-                    logger.exception("Unexpected OpenRouter error")
-                    raise RuntimeError("OpenRouter request failed.") from exc
+                    except error.HTTPError as exc:
+                        details = exc.read().decode("utf-8", errors="ignore")
+                        if exc.code == 400 and "not a valid model ID" in details:
+                            logger.warning(
+                                "OpenRouter model '%s' was rejected, trying fallback.",
+                                candidate_model,
+                            )
+                            break
+                        if exc.code == 402:
+                            affordable_tokens = self._extract_affordable_tokens(details)
+                            if affordable_tokens and affordable_tokens < max_tokens:
+                                logger.warning(
+                                    "OpenRouter credits are low; retrying model '%s' with max_tokens=%s.",
+                                    candidate_model,
+                                    affordable_tokens,
+                                )
+                                max_tokens = affordable_tokens
+                                continue
+                        if exc.code == 429:
+                            logger.warning(
+                                "OpenRouter model '%s' is rate-limited, trying fallback.",
+                                candidate_model,
+                            )
+                            break
+                        logger.exception("OpenRouter HTTP error: %s", details)
+                        raise RuntimeError("OpenRouter request failed.") from exc
+                    except error.URLError as exc:
+                        logger.exception("OpenRouter connection error: %s", exc)
+                        raise RuntimeError("OpenRouter request failed.") from exc
+                    except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
+                        logger.exception("Invalid OpenRouter response")
+                        raise RuntimeError("Invalid OpenRouter response.") from exc
+                    except Exception as exc:
+                        logger.exception("Unexpected OpenRouter error")
+                        raise RuntimeError("OpenRouter request failed.") from exc
 
         raise RuntimeError("OpenRouter request failed.")
+
+    @staticmethod
+    def _extract_affordable_tokens(details: str) -> int | None:
+        match = re.search(r"can only afford (\d+)", details)
+        if not match:
+            return None
+        affordable_tokens = int(match.group(1))
+        return affordable_tokens if affordable_tokens > 0 else None
 
     def _post_chat_completion(self, payload: Dict[str, object]) -> str:
         headers = {

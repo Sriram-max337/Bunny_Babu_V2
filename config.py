@@ -11,7 +11,7 @@ class Config:
     TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
     OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-    OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "deepseek/deepseek-r1-0528")
+    OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "mistralai/mixtral-8x7b-instruct")
     MEMORY_FILE = os.getenv("MEMORY_FILE", "memory_store.json")
     MAX_HISTORY_MESSAGES = 5
     MAX_RESPONSE_TOKENS = 100
