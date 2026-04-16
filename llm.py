@@ -100,6 +100,12 @@ class LLMClient:
         raise RuntimeError("OpenRouter request failed.")
 
     @staticmethod
+    def resolve_model(model: str | None) -> str:
+        if model:
+            return model
+        return Config.OPENROUTER_MODEL
+
+    @staticmethod
     def _extract_affordable_tokens(details: str) -> int | None:
         match = re.search(r"can only afford (\d+)", details)
         if not match:

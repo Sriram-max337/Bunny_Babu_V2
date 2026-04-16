@@ -6,6 +6,9 @@ from typing import Dict, List
 from config import Config
 
 
+DEFAULT_USER_MODEL = "deepseek/deepseek-r1"
+
+
 class MemoryStore:
     def __init__(self, path: str | None = None) -> None:
         self.path = Path(path or Config.MEMORY_FILE)
@@ -31,14 +34,8 @@ class MemoryStore:
         with self._lock:
             data = self._read_all()
             user_key = str(user_id)
-            return data.get(
-                user_key,
-                {
-                    "messages": [],
-                    "mood": "",
-                    "last_mode": "",
-                },
-            )
+            entry = data.get(user_key, {})
+            return self._normalize_entry(entry)
 
     def save_interaction(
         self,
@@ -51,14 +48,7 @@ class MemoryStore:
         with self._lock:
             data = self._read_all()
             user_key = str(user_id)
-            entry = data.get(
-                user_key,
-                {
-                    "messages": [],
-                    "mood": "",
-                    "last_mode": "",
-                },
-            )
+            entry = self._normalize_entry(data.get(user_key, {}))
 
             history: List[Dict[str, str]] = entry.get("messages", [])
             history.extend(
@@ -73,3 +63,27 @@ class MemoryStore:
             entry["last_mode"] = mode
             data[user_key] = entry
             self._write_all(data)
+
+    def set_user_model(self, user_id: int, model: str) -> None:
+        with self._lock:
+            data = self._read_all()
+            user_key = str(user_id)
+            entry = self._normalize_entry(data.get(user_key, {}))
+            entry["model"] = model
+            data[user_key] = entry
+            self._write_all(data)
+
+    @staticmethod
+    def _normalize_entry(entry: Dict) -> Dict:
+        normalized = entry if isinstance(entry, dict) else {}
+        messages = normalized.get("messages", [])
+        if not isinstance(messages, list):
+            messages = []
+
+        return {
+            "messages": messages[-Config.MAX_HISTORY_MESSAGES :],
+            "mood": str(normalized.get("mood", "")),
+            "last_mode": str(normalized.get("last_mode", "")),
+            "model": str(normalized.get("model", DEFAULT_USER_MODEL))
+            or DEFAULT_USER_MODEL,
+        }

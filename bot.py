@@ -1,9 +1,10 @@
 import asyncio
 import logging
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
@@ -12,7 +13,7 @@ from telegram.ext import (
 
 from config import Config, validate_telegram_token
 from llm import LLMClient
-from memory import MemoryStore
+from memory import DEFAULT_USER_MODEL, MemoryStore
 from prompt import build_messages
 
 
@@ -24,6 +25,47 @@ logger = logging.getLogger(__name__)
 
 memory_store = MemoryStore()
 llm_client = LLMClient()
+
+MODEL_OPTIONS = {
+    "model_r1": {
+        "model": "deepseek/deepseek-r1",
+        "label": "Sara (DeepSeek R1)",
+        "mode_reply": "Sara mode selected 😏",
+        "mode_name": "Sara (DeepSeek R1)",
+    },
+    "model_mistral": {
+        "model": "mistralai/mixtral-8x7b-instruct",
+        "label": "Madelyn Mommy (Mistral)",
+        "mode_reply": "Madelyn Mommy mode selected 💀",
+        "mode_name": "Madelyn Mommy (Mistral)",
+    },
+}
+
+
+def build_model_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    MODEL_OPTIONS["model_r1"]["label"],
+                    callback_data="model_r1",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    MODEL_OPTIONS["model_mistral"]["label"],
+                    callback_data="model_mistral",
+                )
+            ],
+        ]
+    )
+
+
+def describe_model(model: str) -> str:
+    for option in MODEL_OPTIONS.values():
+        if option["model"] == model:
+            return option["mode_name"]
+    return "Sara (DeepSeek R1)"
 
 
 def analyze_tone(text: str) -> str:
@@ -75,8 +117,38 @@ def choose_mode(tone: str) -> str:
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     del context
     await update.message.reply_text(
-        "Bunny Baby V2 is online. Send a message and I'll reply in character."
+        "Select Bunny mode:",
+        reply_markup=build_model_keyboard(),
     )
+
+
+async def mode_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    del context
+    if not update.effective_user or not update.message:
+        return
+
+    user_memory = memory_store.get_user_memory(update.effective_user.id)
+    current_model = user_memory.get("model", DEFAULT_USER_MODEL)
+    await update.message.reply_text(f"Current mode: {describe_model(current_model)}")
+
+
+async def handle_model_selection(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    del context
+    if not update.callback_query or not update.effective_user:
+        return
+
+    query = update.callback_query
+    option = MODEL_OPTIONS.get(query.data or "")
+    if not option:
+        await query.answer()
+        return
+
+    memory_store.set_user_model(update.effective_user.id, option["model"])
+    await query.answer()
+    await query.edit_message_text(option["mode_reply"])
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -97,6 +169,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # Step 4: load memory.
     user_memory = memory_store.get_user_memory(user_id)
+    selected_model = user_memory.get("model", DEFAULT_USER_MODEL)
 
     # Step 5: construct prompt.
     messages = build_messages(
@@ -107,7 +180,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # Step 6: call OpenRouter API.
     try:
-        reply_text = await asyncio.to_thread(llm_client.generate_reply, messages)
+        reply_text = await asyncio.to_thread(
+            llm_client.generate_reply,
+            messages,
+            selected_model,
+        )
     except Exception:
         logger.exception("Failed to generate reply for Telegram user %s", user_id)
         reply_text = Config.OPENROUTER_ERROR_MESSAGE
@@ -130,6 +207,8 @@ def main() -> None:
 
     application = Application.builder().token(Config.TELEGRAM_BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("mode", mode_command))
+    application.add_handler(CallbackQueryHandler(handle_model_selection))
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
     )
